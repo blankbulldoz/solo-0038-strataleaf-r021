@@ -34,6 +34,30 @@ def visible_rows(connection, collection, revision):
       WHERE v.body IS NOT NULL ORDER BY v.key""", (collection, revision, collection)).fetchall()
 
 
+def visible_rows_after(connection, collection, revision, after, limit):
+    """Return one key-ordered slice of the visible view at ``revision``."""
+    if after is None:
+        sql = """SELECT v.* FROM versions v JOIN
+          (SELECT key,MAX(rev) AS r FROM versions WHERE collection=? AND rev<=? GROUP BY key) latest
+          ON v.collection=? AND v.key=latest.key AND v.rev=latest.r
+          WHERE v.body IS NOT NULL ORDER BY v.key LIMIT ?"""
+        parameters = (collection, revision, collection, limit)
+    else:
+        sql = """SELECT v.* FROM versions v JOIN
+          (SELECT key,MAX(rev) AS r FROM versions WHERE collection=? AND rev<=? AND key>? GROUP BY key) latest
+          ON v.collection=? AND v.key=latest.key AND v.rev=latest.r
+          WHERE v.body IS NOT NULL ORDER BY v.key LIMIT ?"""
+        parameters = (collection, revision, after, collection, limit)
+    return connection.execute(sql, parameters).fetchall()
+
+
+def visible_key_count(connection, collection, revision):
+    return connection.execute("""SELECT COUNT(*) FROM versions v JOIN
+      (SELECT key,MAX(rev) AS r FROM versions WHERE collection=? AND rev<=? GROUP BY key) latest
+      ON v.collection=? AND v.key=latest.key AND v.rev=latest.r
+      WHERE v.body IS NOT NULL""", (collection, revision, collection)).fetchone()[0]
+
+
 def record(row):
     if row is None or row["body"] is None:
         return None

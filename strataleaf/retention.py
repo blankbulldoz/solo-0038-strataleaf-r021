@@ -27,6 +27,11 @@ class Retention:
         with self.store.atomic(writable=True) as connection:
             target = checked_revision(self.store, target)
             blockers = [row[0] for row in connection.execute("SELECT rev FROM pins UNION ALL SELECT ack FROM consumers")]
+            # An online index build pins both its snapshot view and the commit
+            # range it still has to replay.  Reclaiming either side would leave
+            # a resumable build unable to catch up correctly.
+            blockers.extend(row[0] for row in connection.execute("SELECT pending_from - 1 FROM index_builds"))
+            blockers.extend(row[0] for row in connection.execute("SELECT scan_revision FROM index_builds"))
             boundary = min([target] + blockers)
             prior = int(self.store.get("floor"))
             if boundary < prior:

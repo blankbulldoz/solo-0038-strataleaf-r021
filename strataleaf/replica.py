@@ -44,6 +44,7 @@ class Replication:
                                        (definition["name"], definition["schema"], definition["generation"]))
                 connection.execute("DELETE FROM index_values")
                 connection.execute("DELETE FROM index_defs")
+                connection.execute("DELETE FROM index_builds")
                 for definition in body["indexes"] if body["through"] == body["head"] else []:
                     connection.execute("INSERT INTO index_defs VALUES (?,?,?,?)", (definition["collection"], definition["name"], definition["field"], definition["unique_flag"]))
                 applied = 0

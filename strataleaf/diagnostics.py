@@ -12,7 +12,8 @@ class Diagnostics:
             integrity = [row[0] for row in connection.execute("PRAGMA integrity_check" if deep else "PRAGMA quick_check")]
             references = [tuple(row) for row in connection.execute("PRAGMA foreign_key_check")]
             counts = {table: connection.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
-                      for table in ("collections", "versions", "commits", "index_defs", "index_values", "pins", "consumers")}
+                      for table in ("collections", "versions", "commits", "index_defs", "index_values",
+                                    "index_builds", "index_build_values", "pins", "consumers")}
             revisions = [row[0] for row in connection.execute("SELECT rev FROM commits WHERE rev>? ORDER BY rev", (floor,))]
             issues = []
             if revisions != list(range(floor + 1, head + 1)):
@@ -23,6 +24,13 @@ class Diagnostics:
                 issues.append("SQLite physical integrity failure")
             if not 0 <= floor <= head:
                 issues.append("invalid revision watermarks")
+            for build in connection.execute("SELECT * FROM index_builds"):
+                if build["phase"] not in ("scanning", "catching_up"):
+                    issues.append("index build has an unknown phase: " + build["name"])
+                if not 0 <= build["scan_revision"] <= head:
+                    issues.append("index build snapshot is outside retained history: " + build["name"])
+                if build["phase"] == "catching_up" and build["pending_from"] <= floor:
+                    issues.append("index build can no longer replay from its snapshot: " + build["name"])
             for pin in connection.execute("SELECT name,rev FROM pins"):
                 if not floor <= pin["rev"] <= head:
                     issues.append("read pin outside retained history: " + pin["name"])

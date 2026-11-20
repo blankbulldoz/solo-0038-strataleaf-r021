@@ -22,6 +22,16 @@ CREATE TABLE IF NOT EXISTS index_values (
  collection TEXT NOT NULL, name TEXT NOT NULL, token TEXT NOT NULL, key TEXT NOT NULL,
  PRIMARY KEY(collection,name,token,key), FOREIGN KEY(collection,name) REFERENCES index_defs(collection,name) ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS index_document ON index_values(collection,key);
+CREATE TABLE IF NOT EXISTS index_builds (
+ collection TEXT NOT NULL, name TEXT NOT NULL, field TEXT NOT NULL, unique_flag INTEGER NOT NULL,
+ phase TEXT NOT NULL, scan_revision INTEGER NOT NULL, scan_after TEXT, scanned INTEGER NOT NULL,
+ pending_from INTEGER NOT NULL, chunk_size INTEGER NOT NULL,
+ PRIMARY KEY(collection,name), FOREIGN KEY(collection) REFERENCES collections(name));
+CREATE TABLE IF NOT EXISTS index_build_values (
+ collection TEXT NOT NULL, name TEXT NOT NULL, token TEXT NOT NULL, key TEXT NOT NULL,
+ PRIMARY KEY(collection,name,token,key),
+ FOREIGN KEY(collection,name) REFERENCES index_builds(collection,name) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS index_build_document ON index_build_values(collection,name,key);
 CREATE TABLE IF NOT EXISTS pins (name TEXT PRIMARY KEY, rev INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS consumers (name TEXT PRIMARY KEY, ack INTEGER NOT NULL);
 """

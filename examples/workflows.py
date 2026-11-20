@@ -62,14 +62,63 @@ def run(flow):
                 output = {"revision": page.revision, "keys": keys, "foreign_query": rejected(lambda: db.query("segments", cursor=page.cursor), InvalidCursor)}
             elif flow == "index":
                 db.indexes.create("segments", "by_region", "region")
-                db.indexes.create("segments", "unique_code", "code", unique=True)
                 predicate = {"field": "region", "op": "eq", "value": "east"}
                 indexed = db.query("segments", predicate)
                 scanned = db.query("segments", predicate, force_scan=True)
                 if indexed.records != scanned.records:
                     raise RuntimeError("index and scan differ")
-                collision = rejected(lambda: db.batch().put("segments", "new", {"region": "north", "sequence": 8, "code": "c0"}).commit(), Conflict)
-                output = {"plan": indexed.plan, "keys": [row.key for row in indexed.records], "collision": collision, "integrity": db.diagnostics.inspect(True)}
+
+                # Online build: scan in bounded chunks, let writes/deletes land
+                # in between, resume through a reopen, then switch atomically.
+                steps = [db.indexes.begin("segments", "by_code", "code", unique=True, chunk_size=2)]
+                steps.append(db.indexes.advance("segments", "by_code"))
+                db.batch().put("segments", "seg_00", {"region": "north", "sequence": 0, "code": "c0"}).commit()
+                db.batch().delete("segments", "seg_03").commit()
+                db.batch().put("segments", "seg_06", {"region": "west", "sequence": 6, "code": "c6"}).commit()
+                during_build = db.query("segments", {"field": "code", "op": "eq", "value": "c0"})
+                blocked_compaction = db.retention.compact(db.revision)
+                while True:
+                    state = db.indexes.advance("segments", "by_code")
+                    steps.append(state)
+                    if state["phase"] != "scanning":
+                        break
+                db.close()
+                with Database(folder / "source.db") as reopened:
+                    resumed = reopened.indexes.progress("segments", "by_code")
+                    catchup = [reopened.indexes.catch_up("segments", "by_code", limit=1)]
+                    catchup.append(reopened.indexes.catch_up("segments", "by_code"))
+                    reopened.batch().put("segments", "seg_06", {"region": "west", "sequence": 6, "code": "c16"}).commit()
+                    ready = reopened.indexes.finish("segments", "by_code")
+                    built = reopened.query("segments", {"field": "code", "op": "eq", "value": "c16"})
+                    built_scan = reopened.query("segments", {"field": "code", "op": "eq", "value": "c16"}, force_scan=True)
+                    if built.plan["access"] != "equality_index" or built.records != built_scan.records:
+                        raise RuntimeError("published index was not used or disagreed with the scan")
+
+                    # A concurrent duplicate detected at switch time fails clearly,
+                    # discards the partial projection, and allows a fresh build.
+                    reopened.indexes.begin("segments", "unique_sequence", "sequence", unique=True, chunk_size=2)
+                    while reopened.indexes.advance("segments", "unique_sequence")["phase"] == "scanning":
+                        pass
+                    reopened.batch().put("segments", "twin_a", {"region": "east", "sequence": 42, "code": "c42"}).put(
+                        "segments", "twin_b", {"region": "west", "sequence": 42, "code": "c43"}).commit()
+                    unique_conflict = rejected(lambda: reopened.indexes.finish("segments", "unique_sequence"), Conflict)
+                    after_failure = {"builds": reopened.indexes.builds("segments"),
+                                     "definitions": [item["name"] for item in reopened.indexes.list("segments")]}
+                    reopened.batch().delete("segments", "twin_b").commit()
+                    reopened.indexes.begin("segments", "unique_sequence", "sequence", unique=True, chunk_size=2)
+                    while reopened.indexes.advance("segments", "unique_sequence")["phase"] == "scanning":
+                        pass
+                    while reopened.indexes.catch_up("segments", "unique_sequence")["lag"] > 0:
+                        pass
+                    retried = reopened.indexes.finish("segments", "unique_sequence")
+
+                    collision = rejected(lambda: reopened.batch().put("segments", "new", {"region": "north", "sequence": 8, "code": "c0"}).commit(), Conflict)
+                    output = {"plan": indexed.plan, "keys": [row.key for row in indexed.records],
+                              "online": {"begin": steps[0], "steps": steps, "query_during_build": during_build.plan,
+                                         "blocked_compaction": blocked_compaction, "resumed": resumed,
+                                         "catchup": catchup, "ready": ready, "after_switch": built.plan},
+                              "unique_conflict": unique_conflict, "after_failure": after_failure, "retried": retried,
+                              "collision": collision, "integrity": reopened.diagnostics.inspect(True)}
             elif flow == "feed":
                 db.feed.register("mirror", 0)
                 db.batch().delete("segments", "seg_00").commit()

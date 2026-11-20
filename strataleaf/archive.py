@@ -86,6 +86,10 @@ class Archives:
                 target.execute("UPDATE meta SET value=? WHERE key='cursor_secret'", (secrets.token_hex(32),))
             target.execute("DELETE FROM pins")
             target.execute("DELETE FROM consumers")
+            if follower:
+                # A replica rebuilds current indexes from the upstream stream;
+                # a partial build belongs to the source's write history.
+                target.execute("DELETE FROM index_builds")
             target.commit()
             target.close()
             target = None
